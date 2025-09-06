@@ -1,42 +1,40 @@
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
 #include <cstdio>
+#include "pico/multicore.h"
+#include "commands.h"
+#include "pico/time.h"
+#include "main.h"
 
 #define PWM_PIN 2
 #define SENSE_PIN 1
+#define BUTTON_PIN 15
 #define PWM_FREQ 38000   // 38 kHz
 #define PULSE_COUNT 20   // 20 pulses
 #define RESP_MS 2
 #define PING_PERIOD_MS 25
+#define LED_DEBOUNCE_MS 300
+#define BUTTON_DEBOUNCE_MS 50
 
-enum class IR_TX_STATUS
-{
-    TX = 0,
-    WAIT_RESP = 1,
-    TOUT = 2,
-};
-
-struct status_t
-{
-    IR_TX_STATUS led;
-    bool rx;
-};
-
-status_t status = {IR_TX_STATUS::TX, false};
+status_t status = {IR_TX_STATUS::TX, PUZZLE_STATE::STOPPED, false, 0, false, 0};
 
 volatile uint pulse_counter = 0;
 
-// PWM wrap interrupt
 void pwm_irq_handler() {
     pwm_clear_irq(1);
     pulse_counter++;
 }
 
-void rx_callback(uint gpio, uint32_t event_mask)
+void gpio_isr(uint gpio, uint32_t event_mask)
 {
     if (gpio == SENSE_PIN && status.led != IR_TX_STATUS::TOUT)
     {
-        status.rx = true;
+        status.led_rx = true;
+    }
+    if (gpio == BUTTON_PIN)
+    {
+        if (event_mask & GPIO_IRQ_EDGE_FALL) status.btn_pressed = true;
+        else status.btn_pressed = false;
     }
 }
 
@@ -56,31 +54,78 @@ int main() {
     pwm_set_irq_enabled(slice_num, true);
     irq_set_exclusive_handler(PWM_IRQ_WRAP, pwm_irq_handler);
     irq_set_enabled(PWM_IRQ_WRAP, true);
+    pwm_set_chan_level(slice_num, pwm_gpio_to_channel(PWM_PIN), 0);
 
-    // Input setup
     gpio_init(SENSE_PIN);
     gpio_set_dir(SENSE_PIN, GPIO_IN);
-    gpio_set_irq_enabled_with_callback(SENSE_PIN, GPIO_IRQ_EDGE_FALL, true, &rx_callback);
+    gpio_set_irq_enabled_with_callback(SENSE_PIN, GPIO_IRQ_EDGE_FALL, true, &gpio_isr);
+
+    gpio_init(BUTTON_PIN);
+    gpio_set_dir(BUTTON_PIN, GPIO_IN);
+    gpio_pull_up(BUTTON_PIN);
+    gpio_set_irq_enabled_with_callback(BUTTON_PIN, GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE, true, &gpio_isr);
 
     pwm_set_enabled(slice_num, true);
-    while (true) {
 
-        // TX burst of 20 pulses
-        pulse_counter = 0;
-        pwm_set_chan_level(slice_num, pwm_gpio_to_channel(PWM_PIN), wrap / 2);
-        status.led = IR_TX_STATUS::TX;
-        while (pulse_counter < PULSE_COUNT) {
-            tight_loop_contents();
+    multicore_launch_core1(comms_thread);
+    while (true)
+    {
+        if (status.puzzle == PUZZLE_STATE::STOPPED)
+        {
+            if (status.btn_pressed)
+            {
+                if (status.btn_debounce_end == 0)
+                {
+                    status.btn_debounce_end = to_ms_since_boot(get_absolute_time()) + BUTTON_DEBOUNCE_MS;
+                }
+            }
+            else
+            {
+                status.btn_debounce_end = 0;
+            }
+
+            if (status.btn_debounce_end && (to_ms_since_boot(get_absolute_time()) > status.btn_debounce_end))
+            {
+                printf("%s\n", (commands::commands_pair_list[static_cast<unsigned int>(commands::COMMAND_LIST::BUTTON_PRESSED)].input));
+                status.btn_debounce_end = UINT32_MAX;
+            }
         }
+        else if (status.puzzle == PUZZLE_STATE::RUNNING){
 
-        pwm_set_chan_level(slice_num, pwm_gpio_to_channel(PWM_PIN), 0);
-        status.led = IR_TX_STATUS::WAIT_RESP;
-        sleep_ms(RESP_MS);
+            pulse_counter = 0;
+            pwm_set_chan_level(slice_num, pwm_gpio_to_channel(PWM_PIN), wrap / 2);
+            status.led = IR_TX_STATUS::TX;
+            while (pulse_counter < PULSE_COUNT) {
+                tight_loop_contents();
+            }
 
-        status.led = IR_TX_STATUS::TOUT;
-        sleep_ms(PING_PERIOD_MS - RESP_MS);
+            pwm_set_chan_level(slice_num, pwm_gpio_to_channel(PWM_PIN), 0);
+            status.led = IR_TX_STATUS::WAIT_RESP;
+            sleep_ms(RESP_MS);
 
-        printf("%d\n", status.rx ? 1 : 0);
-        status.rx = false;
+            status.led = IR_TX_STATUS::TOUT;
+            sleep_ms(PING_PERIOD_MS - RESP_MS);
+
+            if (status.led_rx)
+            {
+                if (status.led_debounce_end == 0)
+                {
+                    status.led_debounce_end = to_ms_since_boot(get_absolute_time()) + LED_DEBOUNCE_MS;
+                }
+            }
+            else
+            {
+                status.led_debounce_end = 0;
+            }
+
+
+            if (status.led_debounce_end && (to_ms_since_boot(get_absolute_time()) > status.led_debounce_end))
+            {
+                printf("%s\n", (commands::commands_pair_list[static_cast<unsigned int>(commands::COMMAND_LIST::PUZZLE_COMPLETED)].input));
+                status.led_debounce_end = UINT32_MAX;
+            }
+
+            status.led_rx = false;
+        }
     }
 }
