@@ -6,8 +6,8 @@
 #include "pico/time.h"
 #include "main.h"
 
-#define PWM_PIN 2
-#define SENSE_PIN 1
+#define LED_PWM_PIN 6
+#define SENSE_PIN 14
 #define BUTTON_PIN 15
 #define PWM_FREQ 38000   // 38 kHz
 #define PULSE_COUNT 20   // 20 pulses
@@ -21,7 +21,7 @@ status_t status = {IR_TX_STATUS::TX, PUZZLE_STATE::STOPPED, false, 0, false, 0};
 volatile uint pulse_counter = 0;
 
 void pwm_irq_handler() {
-    pwm_clear_irq(1);
+    pwm_clear_irq(3); // TODO: make proper slice handling
     pulse_counter++;
 }
 
@@ -41,20 +41,20 @@ void gpio_isr(uint gpio, uint32_t event_mask)
 int main() {
     stdio_init_all();
 
-    gpio_set_function(PWM_PIN, GPIO_FUNC_PWM);
-    gpio_set_drive_strength(PWM_PIN, GPIO_DRIVE_STRENGTH_12MA); // Better set with resistor
+    gpio_set_function(LED_PWM_PIN, GPIO_FUNC_PWM);
+    gpio_set_drive_strength(LED_PWM_PIN, GPIO_DRIVE_STRENGTH_12MA); // Better set with resistor
 
-    uint slice_num = pwm_gpio_to_slice_num(PWM_PIN);
+    uint slice_num = pwm_gpio_to_slice_num(LED_PWM_PIN);
     uint32_t clk = 125000000;
     uint32_t wrap = clk / PWM_FREQ - 1;
     pwm_set_wrap(slice_num, wrap);
-    pwm_set_chan_level(slice_num, pwm_gpio_to_channel(PWM_PIN), wrap / 2);
+    pwm_set_chan_level(slice_num, pwm_gpio_to_channel(LED_PWM_PIN), wrap / 2);
 
     pwm_clear_irq(slice_num);
     pwm_set_irq_enabled(slice_num, true);
     irq_set_exclusive_handler(PWM_IRQ_WRAP, pwm_irq_handler);
     irq_set_enabled(PWM_IRQ_WRAP, true);
-    pwm_set_chan_level(slice_num, pwm_gpio_to_channel(PWM_PIN), 0);
+    pwm_set_chan_level(slice_num, pwm_gpio_to_channel(LED_PWM_PIN), 0);
 
     gpio_init(SENSE_PIN);
     gpio_set_dir(SENSE_PIN, GPIO_IN);
@@ -93,13 +93,13 @@ int main() {
         else if (status.puzzle == PUZZLE_STATE::RUNNING){
 
             pulse_counter = 0;
-            pwm_set_chan_level(slice_num, pwm_gpio_to_channel(PWM_PIN), wrap / 2);
+            pwm_set_chan_level(slice_num, pwm_gpio_to_channel(LED_PWM_PIN), wrap / 2);
             status.led = IR_TX_STATUS::TX;
             while (pulse_counter < PULSE_COUNT) {
                 tight_loop_contents();
             }
 
-            pwm_set_chan_level(slice_num, pwm_gpio_to_channel(PWM_PIN), 0);
+            pwm_set_chan_level(slice_num, pwm_gpio_to_channel(LED_PWM_PIN), 0);
             status.led = IR_TX_STATUS::WAIT_RESP;
             sleep_ms(RESP_MS);
 
