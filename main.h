@@ -23,7 +23,7 @@ struct status_t
     IR_TX_STATUS led;
     PUZZLE_STATE puzzle;
     bool led_rx;
-    uint32_t led_debounce_end;
+    uint8_t led_rx_cnt;
     bool btn_pressed;
     uint32_t btn_debounce_end;
 };
